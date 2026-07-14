@@ -1,0 +1,30 @@
+{
+  "name": "slinktool-website",
+  "version": "1.0.0",
+  "description": "Website for receiving real-time waveforms from IRIS FDSNWS SeedLink server",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "nodemon server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.15.1",
+    "net": "^1.0.2",
+    "miniseed": "^0.2.1",
+    "seisplotjs": "^3.2.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "keywords": [
+    "seedlink",
+    "iris",
+    "fdsnws",
+    "waveform",
+    "realtime",
+    "seismology"
+  ],
+  "author": "",
+  "license": "MIT"
+}

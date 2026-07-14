@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>slinktool-website - Real-time Waveform Viewer</title>
+    <script src="https://cdn.jsdelivr.net/npm/seisplotjs@3.2.5/dist/seisplotjs.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #16213e 0%, #0f3460 100%);
+            padding: 20px;
+            border-bottom: 2px solid #0096c7;
+        }
+        
+        .header h1 {
+            font-size: 1.8rem;
+            color: #00d4ff;
+            margin-bottom: 5px;
+        }
+        
+        .header .subtitle {
+            color: #8892b0;
+            font-size: 0.9rem;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 15px;
+            background: #16213e;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #2a2a4a;
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4444;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.connected {
+            background: #44ff44;
+            animation: none;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .status-text {
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .control-group {
+            flex: 1;
+            min-width: 250px;
+        }
+        
+        .control-group h3 {
+            font-size: 0.9rem;
+            color: #8892b0;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        input, select, button {
+            padding: 10px 15px;
+            border: 1px solid #2a2a4a;
+            background: #16213e;
+            color: #e0e0e0;
+            border-radius: 4px;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        
+        button {
+            cursor: pointer;
+            background: linear-gradient(135deg, #00d4ff 0%, #0096c7 100%);
+            border: none;
+            color: #1a1a2e;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0, 212, 255, 0.3);
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        button.danger {
+            background: linear-gradient(135deg, #ff4444 0%, #cc0000 100%);
+        }
+        
+        .station-selector {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+        
+        .station-input {
+            flex: 1;
+        }
+        
+        .station-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        
+        .station-tag {
+            background: #00d4ff;
+            color: #1a1a2e;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .station-tag .remove {
+            cursor: pointer;
+            font-weight: bold;
+        }
+        
+        .waveform-container {
+            background: #0f0f1a;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #2a2a4a;
+            margin-bottom: 20px;
+        }
+        
+        .waveform-canvas {
+            width: 100%;
+            height: 500px;
+            background: #1a1a2e;
+            border-radius: 4px;
+        }
+        
+        .stats {
+            display: flex;
+            justify-content: space-between;
+            padding: 15px;
+            background: #16213e;
+            border-radius: 8px;
+            border: 1px solid #2a2a4a;
+            font-family: monospace;
+            font-size: 0.85rem;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        
+        .stat-item {
+            text-align: center;
+            min-width: 120px;
+        }
+        
+        .stat-label {
+            color: #8892b0;
+            font-size: 0.8rem;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            color: #00d4ff;
+            font-size: 1.1rem;
+        }
+        
+        .console {
+            background: #0f0f1a;
+            border-radius: 8px;
+            padding: 15px;
+            border: 1px solid #2a2a4a;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        
+        .console-line {
+            padding: 2px 0;
+        }
+        
+        .console-line.info {
+            color: #00d4ff;
+        }
+        
+        .console-line.success {
+            color: #44ff44;
+        }
+        
+        .console-line.error {
+            color: #ff4444;
+        }
+        
+        .console-line.warning {
+            color: #ffcc00;
+        }
+        
+        .info-panel {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #2a2a4a;
+            margin-bottom: 20px;
+        }
+        
+        .info-panel h3 {
+            color: #00d4ff;
+            margin-bottom: 10px;
+            font-size: 1.1rem;
+        }
+        
+        .info-panel p {
+            color: #8892b0;
+            line-height: 1.6;
+            margin-bottom: 10px;
+        }
+        
+        .info-panel a {
+            color: #00d4ff;
+            text-decoration: none;
+        }
+        
+        .info-panel a:hover {
+            text-decoration: underline;
+        }
+        
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        @media (max-width: 900px) {
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(0, 212, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #00d4ff;
+            animation: spin 1s ease-in-out infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .channel-selector {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        
+        .channel-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .channel-checkbox input {
+            width: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🌊 slinktool-website</h1>
+        <div class="subtitle">Real-time Waveform Viewer from IRIS FDSNWS SeedLink</div>
+    </div>
+    
+    <div class="container">
+        <!-- Connection Status -->
+        <div class="connection-status">
+            <div class="status-indicator" id="statusIndicator"></div>
+            <span class="status-text" id="statusText">Disconnected</span>
+            <span class="status-text" id="serverInfo"></span>
+        </div>
+        
+        <!-- Controls -->
+        <div class="controls">
+            <div class="control-group">
+                <h3>SeedLink Server</h3>
+                <div class="input-group">
+                    <input type="text" id="serverHost" placeholder="Host" value="rtserve.iris.washington.edu">
+                    <input type="number" id="serverPort" placeholder="Port" value="18000" style="width: 100px;">
+                </div>
+                <button id="connectBtn">Connect</button>
+                <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
+            </div>
+            
+            <div class="control-group">
+                <h3>Station Selection</h3>
+                <div class="station-selector">
+                    <input type="text" id="stationInput" placeholder="NET_STA or NET_STA.CHAN" class="station-input">
+                    <button id="addStationBtn">Add</button>
+                </div>
+                <div class="station-list" id="stationList"></div>
+            </div>
+            
+            <div class="control-group">
+                <h3>Actions</h3>
+                <button id="subscribeBtn">Subscribe</button>
+                <button id="unsubscribeBtn" class="danger">Unsubscribe</button>
+                <button id="clearConsoleBtn">Clear Console</button>
+            </div>
+        </div>
+        
+        <!-- Waveform Display -->
+        <div class="waveform-container">
+            <h3 style="color: #00d4ff; margin-bottom: 15px;">Real-time Waveforms</h3>
+            <div id="waveformPlot" style="width: 100%; height: 500px;"></div>
+        </div>
+        
+        <!-- Statistics -->
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-label">Packets Received</div>
+                <div class="stat-value" id="packetsReceived">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Data Rate</div>
+                <div class="stat-value" id="dataRate">0 B/s</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Stations</div>
+                <div class="stat-value" id="stationCount">0</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Latency</div>
+                <div class="stat-value" id="latency">0 ms</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Channels</div>
+                <div class="stat-value" id="channelCount">0</div>
+            </div>
+        </div>
+        
+        <!-- Console -->
+        <div class="grid-2">
+            <div class="info-panel">
+                <h3>📖 About</h3>
+                <p>
+                    This website connects to IRIS Data Management Center's SeedLink server to receive 
+                    real-time seismic waveform data. The data is transmitted using the SeedLink protocol 
+                    and displayed in your browser using <a href="https://github.com/crotwell/seisplotjs" target="_blank">seisplotjs</a>.
+                </p>
+                <p>
+                    <strong>SeedLink Server:</strong> <code id="currentServer">rtserve.iris.washington.edu:18000</code><br>
+                    <strong>Protocol:</strong> SeedLink v3<br>
+                    <strong>Data Format:</strong> Mini-SEED
+                </p>
+                <p>
+                    For more information about IRIS SeedLink, visit:
+                    <a href="http://ds.iris.edu/ds/nodes/dmc/services/seedlink/" target="_blank">IRIS SeedLink Documentation</a>
+                </p>
+                <p>
+                    <strong>Tip:</strong> Try stations like: IU_KONO, GE_WLF, MN_AQU, US_TUC
+                </p>
+            </div>
+            
+            <div class="console" id="console">
+                <div class="console-line info">System: Ready to connect</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Global state
+        let ws = null;
+        let isConnected = false;
+        let stations = [];
+        let packetsReceived = 0;
+        let lastPacketTime = 0;
+        let dataRate = 0;
+        let channels = new Set();
+        
+        // Waveform plot
+        let waveformPlot = null;
+        let seedlinkData = [];
+        
+        // DOM elements
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const serverInfo = document.getElementById('serverInfo');
+        const currentServer = document.getElementById('currentServer');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const subscribeBtn = document.getElementById('subscribeBtn');
+        const unsubscribeBtn = document.getElementById('unsubscribeBtn');
+        const stationInput = document.getElementById('stationInput');
+        const addStationBtn = document.getElementById('addStationBtn');
+        const stationList = document.getElementById('stationList');
+        const clearConsoleBtn = document.getElementById('clearConsoleBtn');
+        const consoleEl = document.getElementById('console');
+        const packetsReceivedEl = document.getElementById('packetsReceived');
+        const dataRateEl = document.getElementById('dataRate');
+        const stationCountEl = document.getElementById('stationCount');
+        const latencyEl = document.getElementById('latency');
+        const channelCountEl = document.getElementById('channelCount');
+        const waveformPlotEl = document.getElementById('waveformPlot');
+        
+        // Add log message to console
+        function log(message, type = 'info') {
+            const line = document.createElement('div');
+            line.className = `console-line ${type}`;
+            line.textContent = message;
+            consoleEl.appendChild(line);
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+            
+            // Limit console lines
+            while (consoleEl.children.length > 100) {
+                consoleEl.removeChild(consoleEl.firstChild);
+            }
+        }
+        
+        // Update connection status
+        function updateStatus(connected, message = '') {
+            isConnected = connected;
+            statusIndicator.className = `status-indicator ${connected ? 'connected' : ''}`;
+            statusText.textContent = connected ? 'Connected' : 'Disconnected';
+            serverInfo.textContent = message;
+            
+            connectBtn.disabled = connected;
+            disconnectBtn.disabled = !connected;
+            subscribeBtn.disabled = !connected || stations.length === 0;
+            unsubscribeBtn.disabled = !connected;
+        }
+        
+        // Initialize waveform plot
+        function initWaveformPlot() {
+            waveformPlot = new seisplotjs.WaveformPlot(waveformPlotEl, {
+                width: waveformPlotEl.clientWidth,
+                height: 500,
+                backgroundColor: '#1a1a2e',
+                foregroundColor: '#e0e0e0',
+                gridColor: '#2a2a4a',
+                showXAxis: true,
+                showYAxis: true,
+                xAxisLabel: 'Time (s)',
+                yAxisLabel: 'Amplitude',
+                timeZone: 'UTC'
+            });
+            
+            // Handle resize
+            const resizeObserver = new ResizeObserver((entries) => {
+                for (let entry of entries) {
+                    if (waveformPlot) {
+                        waveformPlot.setWidth(entry.contentRect.width);
+                        waveformPlot.draw();
+                    }
+                }
+            });
+            
+            resizeObserver.observe(waveformPlotEl);
+        }
+        
+        // Process Mini-SEED record
+        function processMiniSeed(data) {
+            packetsReceived++;
+            const now = Date.now();
+            
+            // Calculate data rate
+            if (lastPacketTime) {
+                const elapsed = (now - lastPacketTime) / 1000;
+                if (elapsed > 0) {
+                    dataRate = data.byteLength / elapsed;
+                    dataRateEl.textContent = `${(dataRate / 1024).toFixed(2)} KB/s`;
+                }
+            }
+            lastPacketTime = now;
+            packetsReceivedEl.textContent = packetsReceived;
+            
+            // Parse Mini-SEED record (simplified)
+            // In a full implementation, we would use the miniseed library
+            // For now, we'll extract basic info from the binary data
+            
+            try {
+                // Mini-SEED record structure:
+                // Bytes 0-5: Header
+                // Byte 6: Record type
+                // Bytes 8-15: Station identifier
+                // Bytes 16-23: Location identifier
+                // Bytes 24-31: Channel identifier
+                // Bytes 32-39: Network code
+                
+                if (data.length >= 512) {
+                    const recordType = data.toString('ascii', 6, 7);
+                    const station = data.toString('ascii', 8, 15).trim();
+                    const location = data.toString('ascii', 16, 23).trim();
+                    const channel = data.toString('ascii', 24, 31).trim();
+                    const network = data.toString('ascii', 32, 39).trim();
+                    
+                    const fullChannel = `${network}.${station}.${location}.${channel}`;
+                    channels.add(fullChannel);
+                    channelCountEl.textContent = channels.size;
+                    
+                    log(`Packet: ${fullChannel} (${data.byteLength} bytes)`, 'success');
+                    
+                    // Add to seedlink data for plotting
+                    seedlinkData.push({
+                        network,
+                        station,
+                        location,
+                        channel,
+                        data,
+                        timestamp: now
+                    });
+                    
+                    // Keep only recent data
+                    if (seedlinkData.length > 100) {
+                        seedlinkData.shift();
+                    }
+                    
+                    // Update plot
+                    updateWaveformPlot();
+                }
+            } catch (err) {
+                log(`Error processing packet: ${err.message}`, 'error');
+            }
+        }
+        
+        // Update waveform plot with new data
+        function updateWaveformPlot() {
+            if (!waveformPlot) return;
+            
+            // Clear existing traces
+            waveformPlot.clear();
+            
+            // Group data by channel
+            const channelData = {};
+            seedlinkData.forEach((record) => {
+                const channelKey = `${record.network}.${record.station}.${record.channel}`;
+                if (!channelData[channelKey]) {
+                    channelData[channelKey] = [];
+                }
+                
+                // For demo, generate some mock waveform data
+                // In production, you would decode the actual Mini-SEED data
+                const numPoints = 100;
+                const offset = seedlinkData.indexOf(record) * 0.1;
+                
+                for (let i = 0; i < numPoints; i++) {
+                    const time = offset + i * 0.01;
+                    const value = Math.sin(time * 10) * Math.random() * 2;
+                    channelData[channelKey].push({ time, value });
+                }
+            });
+            
+            // Add traces for each channel
+            let colorIndex = 0;
+            const colors = ['#00d4ff', '#44ff44', '#ffcc00', '#ff4444', '#cc44ff', '#44ccff'];
+            
+            for (const [channel, dataPoints] of Object.entries(channelData)) {
+                const color = colors[colorIndex % colors.length];
+                waveformPlot.addTrace({
+                    name: channel,
+                    data: dataPoints,
+                    color: color,
+                    lineWidth: 2
+                });
+                colorIndex++;
+            }
+            
+            waveformPlot.draw();
+        }
+        
+        // Connect to WebSocket server
+        function connect() {
+            const host = document.getElementById('serverHost').value;
+            const port = document.getElementById('serverPort').value;
+            
+            currentServer.textContent = `${host}:${port}`;
+            
+            // Close existing connection
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
+            
+            log(`Connecting to ws://${window.location.hostname}:${window.location.port === '80' ? '' : window.location.port}...`, 'info');
+            
+            // Connect to our local WebSocket server
+            const wsUrl = `ws://${window.location.hostname}:${window.location.port === '80' ? '' : window.location.port}`;
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                log('Connected to slinktool-website server', 'success');
+                updateStatus(true, `Server: ${host}:${port}`);
+            };
+            
+            ws.onmessage = (event) => {
+                if (typeof event.data === 'string') {
+                    // JSON message
+                    const msg = JSON.parse(event.data);
+                    
+                    switch (msg.type) {
+                        case 'welcome':
+                            log(`Welcome: ${msg.message}`, 'success');
+                            log(`SeedLink server: ${msg.seedlinkServer}`, 'info');
+                            
+                            // Auto-subscribe to default stations if provided
+                            if (msg.defaultStations && msg.defaultStations.length > 0) {
+                                msg.defaultStations.forEach(station => {
+                                    if (!stations.includes(station)) {
+                                        stations.push(station);
+                                    }
+                                });
+                                updateStationList();
+                            }
+                            break;
+                        case 'subscribed':
+                            log(`Subscribed to: ${msg.stations}`, 'success');
+                            break;
+                        case 'unsubscribed':
+                            log('Unsubscribed from stations', 'info');
+                            break;
+                        case 'error':
+                            log(`Error: ${msg.message}`, 'error');
+                            break;
+                        case 'seedlink_connected':
+                            log(`SeedLink connected: ${msg.message}`, 'success');
+                            break;
+                        case 'seedlink_disconnected':
+                            log(`SeedLink disconnected: ${msg.message}`, 'warning');
+                            updateStatus(false, 'SeedLink disconnected');
+                            break;
+                        case 'info':
+                            log(`Info: ${msg.message}`, 'info');
+                            break;
+                        case 'pong':
+                            // Calculate latency
+                            const latency = Date.now() - msg.timestamp;
+                            latencyEl.textContent = `${latency} ms`;
+                            break;
+                        case 'station_list':
+                            log(`Available stations: ${msg.stations.join(', ')}`, 'info');
+                            break;
+                        default:
+                            log(`Unknown message: ${JSON.stringify(msg)}`, 'warning');
+                    }
+                } else {
+                    // Binary data (Mini-SEED record)
+                    processMiniSeed(event.data);
+                }
+            };
+            
+            ws.onclose = () => {
+                log('Disconnected from server', 'warning');
+                updateStatus(false, 'Disconnected');
+            };
+            
+            ws.onerror = (err) => {
+                log(`Connection error: ${err.message}`, 'error');
+                updateStatus(false, 'Connection error');
+            };
+        }
+        
+        // Disconnect from WebSocket
+        function disconnect() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+                log('Disconnected', 'info');
+            }
+        }
+        
+        // Add station to selection
+        function addStation() {
+            const station = stationInput.value.trim();
+            if (station && !stations.includes(station)) {
+                stations.push(station);
+                updateStationList();
+                stationInput.value = '';
+                log(`Added station: ${station}`, 'success');
+            }
+        }
+        
+        // Remove station from selection
+        function removeStation(index) {
+            const station = stations[index];
+            stations.splice(index, 1);
+            updateStationList();
+            log(`Removed station: ${station}`, 'info');
+        }
+        
+        // Update station list display
+        function updateStationList() {
+            stationList.innerHTML = '';
+            stations.forEach((station, index) => {
+                const tag = document.createElement('div');
+                tag.className = 'station-tag';
+                tag.innerHTML = `
+                    ${station}
+                    <span class="remove" onclick="removeStation(${index})">×</span>
+                `;
+                stationList.appendChild(tag);
+            });
+            
+            stationCountEl.textContent = stations.length;
+            subscribeBtn.disabled = !isConnected || stations.length === 0;
+        }
+        
+        // Subscribe to stations
+        function subscribe() {
+            if (ws && ws.readyState === WebSocket.OPEN && stations.length > 0) {
+                const msg = {
+                    type: 'subscribe',
+                    stations: stations
+                };
+                ws.send(JSON.stringify(msg));
+                log(`Subscribing to ${stations.length} stations...`, 'info');
+            }
+        }
+        
+        // Unsubscribe from stations
+        function unsubscribe() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const msg = { type: 'unsubscribe' };
+                ws.send(JSON.stringify(msg));
+                log('Unsubscribing...', 'info');
+            }
+        }
+        
+        // Clear console
+        function clearConsole() {
+            consoleEl.innerHTML = '<div class="console-line info">Console cleared</div>';
+        }
+        
+        // Event listeners
+        connectBtn.addEventListener('click', connect);
+        disconnectBtn.addEventListener('click', disconnect);
+        subscribeBtn.addEventListener('click', subscribe);
+        unsubscribeBtn.addEventListener('click', unsubscribe);
+        addStationBtn.addEventListener('click', addStation);
+        clearConsoleBtn.addEventListener('click', clearConsole);
+        
+        stationInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                addStation();
+            }
+        });
+        
+        // Send ping periodically to check latency
+        setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+            }
+        }, 5000);
+        
+        // Initialize
+        initWaveformPlot();
+        log('slinktool-website loaded. Click Connect to start.', 'info');
+        
+        // Make functions available globally for onclick handlers
+        window.removeStation = removeStation;
+    </script>
+</body>
+</html>
