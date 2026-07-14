@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #1a1a2e; color: #e0e0e0; }
+        #log { background: #0f0f1a; padding: 15px; border-radius: 8px; margin-top: 20px; 
+              max-height: 400px; overflow-y: auto; font-family: monospace; white-space: pre-wrap; }
+        .success { color: #44ff44; }
+        .error { color: #ff4444; }
+        .info { color: #00d4ff; }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Test for slinktool-website</h1>
+    <p>Testing connection to: <code id="wsUrl">wss://slinktool.onrender.com/ws</code></p>
+    
+    <button onclick="connect()">Connect</button>
+    <button onclick="subscribe()" id="subscribeBtn" disabled>Subscribe to GE_WLF</button>
+    <button onclick="clearLog()">Clear Log</button>
+    
+    <div id="log"></div>
+    
+    <script>
+        let ws = null;
+        
+        function log(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = type;
+            div.textContent = message;
+            document.getElementById('log').appendChild(div);
+        }
+        
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+        
+        function connect() {
+            clearLog();
+            log('Connecting to WebSocket...', 'info');
+            
+            const wsUrl = 'wss://' + window.location.hostname + '/ws';
+            document.getElementById('wsUrl').textContent = wsUrl;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                log('✅ WebSocket connected!', 'success');
+                document.getElementById('subscribeBtn').disabled = false;
+            };
+            
+            ws.onmessage = (event) => {
+                if (typeof event.data === 'string') {
+                    const msg = JSON.parse(event.data);
+                    log(`JSON: ${JSON.stringify(msg)}`, 'info');
+                    
+                    if (msg.type === 'welcome') {
+                        log(`Server: ${msg.seedlinkServer}`, 'success');
+                    }
+                } else {
+                    log(`🎉 BINARY DATA! Size: ${event.data.byteLength} bytes`, 'success');
+                    
+                    // Try to parse as Mini-SEED
+                    if (event.data.length >= 512) {
+                        const recordType = event.data.toString('ascii', 6, 7);
+                        const station = event.data.toString('ascii', 8, 15).trim();
+                        const channel = event.data.toString('ascii', 24, 31).trim();
+                        const network = event.data.toString('ascii', 32, 39).trim();
+                        
+                        log(`Mini-SEED: ${network}.${station}.${channel} (type: ${recordType})`, 'success');
+                    }
+                }
+            };
+            
+            ws.onclose = () => {
+                log('❌ WebSocket closed', 'error');
+                document.getElementById('subscribeBtn').disabled = true;
+            };
+            
+            ws.onerror = (err) => {
+                log(`❌ WebSocket error: ${err.message}`, 'error');
+            };
+        }
+        
+        function subscribe() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                log('Subscribing to GE_WLF...', 'info');
+                ws.send(JSON.stringify({ type: 'subscribe', stations: ['GE_WLF'] }));
+            }
+        }
+        
+        // Auto-connect on page load
+        window.addEventListener('load', () => {
+            log('Page loaded. Click Connect to test.', 'info');
+        });
+    </script>
+</body>
+</html>
