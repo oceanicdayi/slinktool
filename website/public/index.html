@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>slinktool-website - Real-time Waveform Viewer</title>
-    <script src="https://cdn.jsdelivr.net/npm/seisplotjs@3.2.5/dist/seisplotjs.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -182,11 +181,12 @@
             margin-bottom: 20px;
         }
         
-        .waveform-canvas {
+        .waveform-plot {
             width: 100%;
             height: 500px;
             background: #1a1a2e;
             border-radius: 4px;
+            position: relative;
         }
         
         .stats {
@@ -306,19 +306,26 @@
             to { transform: rotate(360deg); }
         }
         
-        .alert {
-            padding: 15px;
+        .debug-info {
             background: #ff444420;
             border: 1px solid #ff4444;
             border-radius: 8px;
+            padding: 15px;
             margin-bottom: 20px;
-            color: #ff8888;
+            display: none;
         }
         
-        .alert.success {
-            background: #44ff4420;
-            border-color: #44ff44;
-            color: #88ff88;
+        .debug-info.show {
+            display: block;
+        }
+        
+        .debug-toggle {
+            background: #ff4444;
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            cursor: pointer;
         }
     </style>
 </head>
@@ -334,14 +341,16 @@
             <div class="status-indicator" id="statusIndicator"></div>
             <span class="status-text" id="statusText">Disconnected</span>
             <span class="status-text" id="serverInfo"></span>
+            <button class="debug-toggle" onclick="toggleDebug()">🐛 Debug</button>
         </div>
         
-        <!-- Alert for WebSocket connection issues -->
-        <div class="alert" id="wsAlert" style="display: none;">
-            <strong>⚠️ WebSocket Connection Issue:</strong> 
-            <span id="wsAlertText">Trying to connect...</span>
-            <br>
-            <small>Make sure your server is running and WebSocket is supported on your hosting platform.</small>
+        <!-- Debug Info -->
+        <div class="debug-info" id="debugInfo">
+            <h3>Debug Information</h3>
+            <p><strong>WebSocket URL:</strong> <code id="debugWsUrl">Not set</code></p>
+            <p><strong>WebSocket Status:</strong> <code id="debugWsStatus">Disconnected</code></p>
+            <p><strong>Messages Received:</strong> <code id="debugMessages">0</code> (JSON: <code id="debugJsonCount">0</code>, Binary: <code id="debugBinaryCount">0</code>)</p>
+            <p><strong>Last Message:</strong> <code id="debugLastMessage">None</code></p>
         </div>
         
         <!-- Controls -->
@@ -349,7 +358,7 @@
             <div class="control-group">
                 <h3>SeedLink Server</h3>
                 <div class="input-group">
-                    <input type="text" id="serverHost" placeholder="Host" value="rtserve.iris.washington.edu">
+                    <input type="text" id="serverHost" placeholder="Host" value="geofon.gfz-potsdam.de">
                     <input type="number" id="serverPort" placeholder="Port" value="18000" style="width: 100px;">
                 </div>
                 <button id="connectBtn">Connect</button>
@@ -359,10 +368,11 @@
             <div class="control-group">
                 <h3>Station Selection</h3>
                 <div class="station-selector">
-                    <input type="text" id="stationInput" placeholder="NET_STA or NET_STA.CHAN" class="station-input">
+                    <input type="text" id="stationInput" placeholder="NET_STA" class="station-input">
                     <button id="addStationBtn">Add</button>
                 </div>
                 <div class="station-list" id="stationList"></div>
+                <small style="color: #8892b0; display: block; margin-top: 5px;">Try: GE_WLF, GE_APE, GE_FUR, IU_KONO</small>
             </div>
             
             <div class="control-group">
@@ -376,7 +386,7 @@
         <!-- Waveform Display -->
         <div class="waveform-container">
             <h3 style="color: #00d4ff; margin-bottom: 15px;">Real-time Waveforms</h3>
-            <div id="waveformPlot" style="width: 100%; height: 500px;"></div>
+            <canvas id="waveformCanvas" class="waveform-plot"></canvas>
         </div>
         
         <!-- Statistics -->
@@ -394,6 +404,10 @@
                 <div class="stat-value" id="stationCount">0</div>
             </div>
             <div class="stat-item">
+                <div class="stat-label">Channels</div>
+                <div class="stat-value" id="channelCount">0</div>
+            </div>
+            <div class="stat-item">
                 <div class="stat-label">Latency</div>
                 <div class="stat-value" id="latency">0 ms</div>
             </div>
@@ -404,18 +418,19 @@
             <div class="info-panel">
                 <h3>📖 About</h3>
                 <p>
-                    This website connects to IRIS Data Management Center's SeedLink server to receive 
-                    real-time seismic waveform data. The data is transmitted using the SeedLink protocol 
-                    and displayed in your browser using <a href="https://github.com/crotwell/seisplotjs" target="_blank">seisplotjs</a>.
+                    This website connects to SeedLink servers to receive real-time seismic waveform data.
+                    The data is displayed in your browser using HTML5 Canvas.
                 </p>
                 <p>
-                    <strong>SeedLink Server:</strong> <code id="currentServer">rtserve.iris.washington.edu:18000</code><br>
+                    <strong>Current Server:</strong> <code id="currentServer">geofon.gfz-potsdam.de:18000</code><br>
                     <strong>Protocol:</strong> SeedLink v3<br>
-                    <strong>Data Format:</strong> Mini-SEED
+                    <strong>Data Format:</strong> Mini-SEED (512 bytes)
                 </p>
                 <p>
-                    For more information about IRIS SeedLink, visit:
-                    <a href="http://ds.iris.edu/ds/nodes/dmc/services/seedlink/" target="_blank">IRIS SeedLink Documentation</a>
+                    <strong>Working Servers:</strong><br>
+                    <code>geofon.gfz-potsdam.de:18000</code> (GEOFON)<br>
+                    <code>rtserve.iris.washington.edu:18000</code> (IRIS)<br>
+                    <code>seedlink.knmi.nl:18000</code> (ORFEUS)
                 </p>
             </div>
             
@@ -426,7 +441,10 @@
     </div>
     
     <script>
-        // Global state
+        // ============================================
+        // Global State
+        // ============================================
+        
         let ws = null;
         let isConnected = false;
         let stations = [];
@@ -435,19 +453,26 @@
         let dataRate = 0;
         let channels = new Set();
         let reconnectAttempts = 0;
-        let maxReconnectAttempts = 5;
+        let maxReconnectAttempts = 10;
         
-        // Waveform plot
-        let waveformPlot = null;
-        let seedlinkData = [];
+        // Canvas and plotting
+        let canvas, ctx;
+        let traces = {}; // channel -> { data: [], color: string }
+        let timeWindow = 60; // seconds of data to display
+        let colors = ['#00d4ff', '#44ff44', '#ffcc00', '#ff4444', '#cc44ff', '#44ccff', '#00ffcc', '#ff88cc'];
         
-        // DOM elements
+        // Debug info
+        let jsonMessages = 0;
+        let binaryMessages = 0;
+        
+        // ============================================
+        // DOM Elements
+        // ============================================
+        
         const statusIndicator = document.getElementById('statusIndicator');
         const statusText = document.getElementById('statusText');
         const serverInfo = document.getElementById('serverInfo');
         const currentServer = document.getElementById('currentServer');
-        const wsAlert = document.getElementById('wsAlert');
-        const wsAlertText = document.getElementById('wsAlertText');
         const connectBtn = document.getElementById('connectBtn');
         const disconnectBtn = document.getElementById('disconnectBtn');
         const subscribeBtn = document.getElementById('subscribeBtn');
@@ -460,24 +485,21 @@
         const packetsReceivedEl = document.getElementById('packetsReceived');
         const dataRateEl = document.getElementById('dataRate');
         const stationCountEl = document.getElementById('stationCount');
+        const channelCountEl = document.getElementById('channelCount');
         const latencyEl = document.getElementById('latency');
-        const waveformPlotEl = document.getElementById('waveformPlot');
+        const waveformCanvas = document.getElementById('waveformCanvas');
+        const debugInfo = document.getElementById('debugInfo');
+        const debugWsUrl = document.getElementById('debugWsUrl');
+        const debugWsStatus = document.getElementById('debugWsStatus');
+        const debugMessages = document.getElementById('debugMessages');
+        const debugJsonCount = document.getElementById('debugJsonCount');
+        const debugBinaryCount = document.getElementById('debugBinaryCount');
+        const debugLastMessage = document.getElementById('debugLastMessage');
         
-        // Detect WebSocket URL based on environment
-        function getWebSocketUrl() {
-            // On Render, use wss:// with the same host
-            if (window.location.hostname.includes('onrender.com')) {
-                return `wss://${window.location.hostname}/ws`;
-            }
-            // On Vercel, use wss:// with the same host
-            if (window.location.hostname.includes('vercel.app')) {
-                return `wss://${window.location.hostname}/ws`;
-            }
-            // Local development
-            return `ws://${window.location.hostname}:${window.location.port || 3000}/ws`;
-        }
+        // ============================================
+        // Utility Functions
+        // ============================================
         
-        // Add log message to console
         function log(message, type = 'info') {
             const line = document.createElement('div');
             line.className = `console-line ${type}`;
@@ -485,162 +507,194 @@
             consoleEl.appendChild(line);
             consoleEl.scrollTop = consoleEl.scrollHeight;
             
-            // Limit console lines
             while (consoleEl.children.length > 100) {
                 consoleEl.removeChild(consoleEl.firstChild);
             }
         }
         
-        // Update connection status
         function updateStatus(connected, message = '') {
             isConnected = connected;
             statusIndicator.className = `status-indicator ${connected ? 'connected' : ''}`;
             statusText.textContent = connected ? 'Connected' : 'Disconnected';
             serverInfo.textContent = message;
+            debugWsStatus.textContent = connected ? 'Connected' : 'Disconnected';
             
             connectBtn.disabled = connected;
             disconnectBtn.disabled = !connected;
             subscribeBtn.disabled = !connected || stations.length === 0;
             unsubscribeBtn.disabled = !connected;
-            
-            if (connected) {
-                wsAlert.style.display = 'none';
+        }
+        
+        function toggleDebug() {
+            debugInfo.classList.toggle('show');
+        }
+        
+        function getWebSocketUrl() {
+            const host = window.location.hostname;
+            if (host.includes('onrender.com')) {
+                return `wss://${host}/ws`;
             }
+            if (host.includes('vercel.app')) {
+                return `wss://${host}/ws`;
+            }
+            return `ws://${host}:${window.location.port || 3000}/ws`;
         }
         
-        // Show WebSocket alert
-        function showWsAlert(message) {
-            wsAlertText.textContent = message;
-            wsAlert.style.display = 'block';
-        }
+        // ============================================
+        // Canvas Setup
+        // ============================================
         
-        // Initialize waveform plot
-        function initWaveformPlot() {
-            waveformPlot = new seisplotjs.WaveformPlot(waveformPlotEl, {
-                width: waveformPlotEl.clientWidth,
-                height: 500,
-                backgroundColor: '#1a1a2e',
-                foregroundColor: '#e0e0e0',
-                gridColor: '#2a2a4a',
-                showXAxis: true,
-                showYAxis: true,
-                xAxisLabel: 'Time (s)',
-                yAxisLabel: 'Amplitude',
-                timeZone: 'UTC'
-            });
+        function initCanvas() {
+            canvas = waveformCanvas;
+            ctx = canvas.getContext('2d');
+            resizeCanvas();
             
-            // Handle resize
-            const resizeObserver = new ResizeObserver((entries) => {
-                for (let entry of entries) {
-                    if (waveformPlot) {
-                        waveformPlot.setWidth(entry.contentRect.width);
-                        waveformPlot.draw();
+            window.addEventListener('resize', () => {
+                resizeCanvas();
+                drawWaveforms();
+            });
+        }
+        
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            canvas.width = container.clientWidth;
+            canvas.height = 500;
+            drawWaveforms();
+        }
+        
+        // ============================================
+        // Waveform Plotting
+        // ============================================
+        
+        function addDataPoint(channel, time, value) {
+            if (!traces[channel]) {
+                const color = colors[Object.keys(traces).length % colors.length];
+                traces[channel] = { data: [], color, maxValue: 1 };
+                channelCountEl.textContent = Object.keys(traces).length;
+            }
+            
+            traces[channel].data.push({ time, value });
+            
+            // Update max value for scaling
+            const absValue = Math.abs(value);
+            if (absValue > traces[channel].maxValue) {
+                traces[channel].maxValue = absValue;
+            }
+            
+            // Keep only recent data
+            const cutoff = Date.now() / 1000 - timeWindow;
+            traces[channel].data = traces[channel].data.filter(d => d.time > cutoff);
+        }
+        
+        function drawWaveforms() {
+            if (!ctx || canvas.width === 0) return;
+            
+            // Clear canvas
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid
+            ctx.strokeStyle = '#2a2a4a';
+            ctx.lineWidth = 1;
+            
+            // Horizontal lines
+            for (let i = 0; i <= 5; i++) {
+                const y = (canvas.height / 6) * i;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+            
+            // Draw waveforms
+            const now = Date.now() / 1000;
+            const startTime = now - timeWindow;
+            
+            for (const [channel, trace] of Object.entries(traces)) {
+                if (trace.data.length < 2) continue;
+                
+                ctx.strokeStyle = trace.color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                
+                let firstPoint = true;
+                for (const point of trace.data) {
+                    // Normalize time to canvas width
+                    const x = ((point.time - startTime) / timeWindow) * canvas.width;
+                    
+                    // Normalize value to canvas height
+                    const y = (canvas.height / 2) + 
+                              (point.value / Math.max(trace.maxValue, 1)) * 
+                              (canvas.height / 2) * -1; // Invert Y
+                    
+                    if (firstPoint) {
+                        ctx.moveTo(x, y);
+                        firstPoint = false;
+                    } else {
+                        ctx.lineTo(x, y);
                     }
                 }
-            });
-            
-            resizeObserver.observe(waveformPlotEl);
+                
+                ctx.stroke();
+                
+                // Draw channel label
+                ctx.fillStyle = trace.color;
+                ctx.font = '12px sans-serif';
+                ctx.fillText(channel, 10, canvas.height / 6 * (Object.keys(traces).indexOf(channel) + 1) - 5);
+            }
         }
         
-        // Process Mini-SEED record
-        function processMiniSeed(data) {
-            packetsReceived++;
-            const now = Date.now();
-            
-            // Calculate data rate
-            if (lastPacketTime) {
-                const elapsed = (now - lastPacketTime) / 1000;
-                if (elapsed > 0) {
-                    dataRate = data.byteLength / elapsed;
-                    dataRateEl.textContent = `${(dataRate / 1024).toFixed(2)} KB/s`;
-                }
+        // ============================================
+        // Mini-SEED Parsing (Simplified)
+        // ============================================
+        
+        function parseMiniSeed(data) {
+            if (!data || data.length < 512) {
+                return null;
             }
-            lastPacketTime = now;
-            packetsReceivedEl.textContent = packetsReceived;
             
-            // Parse Mini-SEED record (simplified)
             try {
-                if (data && data.length >= 512) {
-                    const recordType = data.toString('ascii', 6, 7);
-                    const station = data.toString('ascii', 8, 15).trim();
-                    const location = data.toString('ascii', 16, 23).trim();
-                    const channel = data.toString('ascii', 24, 31).trim();
-                    const network = data.toString('ascii', 32, 39).trim();
-                    
-                    const fullChannel = `${network}.${station}.${location}.${channel}`;
-                    channels.add(fullChannel);
-                    stationCountEl.textContent = channels.size;
-                    
-                    log(`Packet: ${fullChannel} (${data.length} bytes)`, 'success');
-                    
-                    // Add to seedlink data for plotting
-                    seedlinkData.push({
-                        network,
-                        station,
-                        location,
-                        channel,
-                        data,
-                        timestamp: now
-                    });
-                    
-                    // Keep only recent data
-                    if (seedlinkData.length > 100) {
-                        seedlinkData.shift();
-                    }
-                    
-                    // Update plot
-                    updateWaveformPlot();
+                // Extract basic info from Mini-SEED header
+                const recordType = data.toString('ascii', 6, 7);
+                const station = data.toString('ascii', 8, 15).trim() || '?';
+                const location = data.toString('ascii', 16, 23).trim() || '--';
+                const channel = data.toString('ascii', 24, 31).trim() || '???';
+                const network = data.toString('ascii', 32, 39).trim() || '??';
+                
+                // For demo purposes, generate mock waveform data
+                // In production, you would decode actual samples from the data section
+                const now = Date.now() / 1000;
+                const numSamples = 100;
+                const sampleRate = 20; // samples per second
+                
+                const fullChannel = `${network}.${station}.${location}.${channel}`;
+                
+                for (let i = 0; i < numSamples; i++) {
+                    const time = now - (numSamples - i) / sampleRate;
+                    // Generate a sine wave with some randomness
+                    const value = Math.sin(time * 2 * Math.PI) * 0.5 + Math.random() * 0.2;
+                    addDataPoint(fullChannel, time, value);
                 }
+                
+                return {
+                    network,
+                    station,
+                    location,
+                    channel,
+                    fullChannel,
+                    recordType,
+                    data
+                };
             } catch (err) {
-                log(`Error processing packet: ${err.message}`, 'error');
+                console.error('Error parsing Mini-SEED:', err);
+                return null;
             }
         }
         
-        // Update waveform plot with new data
-        function updateWaveformPlot() {
-            if (!waveformPlot) return;
-            
-            // Clear existing traces
-            waveformPlot.clear();
-            
-            // Group data by channel
-            const channelData = {};
-            seedlinkData.forEach((record, index) => {
-                const channelKey = `${record.network}.${record.station}.${record.channel}`;
-                if (!channelData[channelKey]) {
-                    channelData[channelKey] = [];
-                }
-                
-                // For demo, generate some mock waveform data
-                const numPoints = 100;
-                const offset = index * 0.1;
-                
-                for (let i = 0; i < numPoints; i++) {
-                    const time = offset + i * 0.01;
-                    const value = Math.sin(time * 10) * Math.random() * 2;
-                    channelData[channelKey].push({ time, value });
-                }
-            });
-            
-            // Add traces for each channel
-            let colorIndex = 0;
-            const colors = ['#00d4ff', '#44ff44', '#ffcc00', '#ff4444', '#cc44ff', '#44ccff'];
-            
-            for (const [channel, dataPoints] of Object.entries(channelData)) {
-                const color = colors[colorIndex % colors.length];
-                waveformPlot.addTrace({
-                    name: channel,
-                    data: dataPoints,
-                    color: color,
-                    lineWidth: 2
-                });
-                colorIndex++;
-            }
-            
-            waveformPlot.draw();
-        }
+        // ============================================
+        // WebSocket Connection
+        // ============================================
         
-        // Connect to WebSocket server
         function connect() {
             const host = document.getElementById('serverHost').value;
             const port = document.getElementById('serverPort').value;
@@ -652,18 +706,23 @@
             }
             
             log(`Connecting to WebSocket server...`, 'info');
-            showWsAlert('Connecting to server...');
+            jsonMessages = 0;
+            binaryMessages = 0;
+            debugMessages.textContent = '0';
+            debugJsonCount.textContent = '0';
+            debugBinaryCount.textContent = '0';
+            debugLastMessage.textContent = 'None';
+            debugWsUrl.textContent = getWebSocketUrl();
             
-            // Get the appropriate WebSocket URL
             const wsUrl = getWebSocketUrl();
-            log(`WebSocket URL: ${wsUrl}`, 'info');
             
             try {
                 ws = new WebSocket(wsUrl);
                 
                 ws.onopen = () => {
-                    log('Connected to WebSocket server', 'success');
+                    log('✅ Connected to WebSocket server', 'success');
                     updateStatus(true, `Server: ${host}:${port}`);
+                    debugWsStatus.textContent = 'Connected';
                     reconnectAttempts = 0;
                     
                     // Auto-subscribe if stations are already selected
@@ -674,69 +733,106 @@
                 
                 ws.onmessage = (event) => {
                     if (typeof event.data === 'string') {
-                        const msg = JSON.parse(event.data);
+                        jsonMessages++;
+                        debugJsonCount.textContent = jsonMessages;
+                        debugMessages.textContent = jsonMessages + binaryMessages;
                         
-                        switch (msg.type) {
-                            case 'welcome':
-                                log(`Welcome: ${msg.message}`, 'success');
-                                log(`SeedLink server: ${msg.seedlinkServer}`, 'info');
-                                break;
-                            case 'subscribed':
-                                log(`Subscribed to: ${msg.stations.join(', ')}`, 'success');
-                                break;
-                            case 'unsubscribed':
-                                log('Unsubscribed from stations', 'info');
-                                break;
-                            case 'seedlink_connected':
-                                log(`SeedLink connected: ${msg.message}`, 'success');
-                                break;
-                            case 'seedlink_disconnected':
-                                log(`SeedLink disconnected: ${msg.message}`, 'warning');
-                                updateStatus(false, 'SeedLink disconnected');
-                                break;
-                            case 'error':
-                                log(`Error: ${msg.message}`, 'error');
-                                break;
-                            case 'pong':
-                                const latency = Date.now() - msg.timestamp;
-                                latencyEl.textContent = `${latency} ms`;
-                                break;
-                            default:
-                                log(`Unknown message: ${JSON.stringify(msg)}`, 'warning');
+                        try {
+                            const msg = JSON.parse(event.data);
+                            debugLastMessage.textContent = JSON.stringify(msg).substring(0, 50);
+                            
+                            switch (msg.type) {
+                                case 'welcome':
+                                    log(`Welcome: ${msg.message}`, 'success');
+                                    log(`SeedLink server: ${msg.seedlinkServer}`, 'info');
+                                    break;
+                                case 'subscribed':
+                                    log(`✅ Subscribed to: ${msg.stations.join(', ')}`, 'success');
+                                    break;
+                                case 'unsubscribed':
+                                    log('Unsubscribed from stations', 'info');
+                                    break;
+                                case 'seedlink_connected':
+                                    log(`🔗 SeedLink connected: ${msg.message}`, 'success');
+                                    break;
+                                case 'seedlink_disconnected':
+                                    log(`🔗 SeedLink disconnected: ${msg.message}`, 'warning');
+                                    updateStatus(false, 'SeedLink disconnected');
+                                    break;
+                                case 'error':
+                                    log(`❌ Error: ${msg.message}`, 'error');
+                                    break;
+                                case 'pong':
+                                    const latency = Date.now() - msg.timestamp;
+                                    latencyEl.textContent = `${latency} ms`;
+                                    break;
+                                default:
+                                    log(`Unknown message type: ${msg.type}`, 'warning');
+                            }
+                        } catch (err) {
+                            log(`Error parsing JSON: ${err.message}`, 'error');
                         }
                     } else {
                         // Binary data (Mini-SEED record)
-                        processMiniSeed(event.data);
+                        binaryMessages++;
+                        debugBinaryCount.textContent = binaryMessages;
+                        debugMessages.textContent = jsonMessages + binaryMessages;
+                        debugLastMessage.textContent = `Binary (${event.data.byteLength} bytes)`;
+                        
+                        log(`📦 Binary data received: ${event.data.byteLength} bytes`, 'success');
+                        
+                        // Parse and display waveform
+                        const record = parseMiniSeed(event.data);
+                        if (record) {
+                            packetsReceived++;
+                            packetsReceivedEl.textContent = packetsReceived;
+                            
+                            const now = Date.now();
+                            if (lastPacketTime) {
+                                const elapsed = (now - lastPacketTime) / 1000;
+                                if (elapsed > 0) {
+                                    dataRate = event.data.byteLength / elapsed;
+                                    dataRateEl.textContent = `${(dataRate / 1024).toFixed(2)} KB/s`;
+                                }
+                            }
+                            lastPacketTime = now;
+                            
+                            log(`Waveform: ${record.fullChannel}`, 'success');
+                            channels.add(record.fullChannel);
+                            channelCountEl.textContent = channels.size;
+                            
+                            drawWaveforms();
+                        }
                     }
                 };
                 
                 ws.onclose = () => {
-                    log('Disconnected from WebSocket server', 'warning');
+                    log('❌ Disconnected from WebSocket server', 'warning');
                     updateStatus(false, 'Disconnected');
+                    debugWsStatus.textContent = 'Disconnected';
                     
                     // Auto-reconnect
                     if (reconnectAttempts < maxReconnectAttempts) {
                         reconnectAttempts++;
-                        showWsAlert(`Disconnected. Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`);
+                        log(`Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`, 'info');
                         setTimeout(connect, 3000);
                     } else {
-                        showWsAlert('Failed to connect. Check if the server is running.');
+                        log('Max reconnection attempts reached', 'error');
                     }
                 };
                 
                 ws.onerror = (err) => {
-                    log(`WebSocket error: ${err.message}`, 'error');
-                    showWsAlert(`Connection error: ${err.message}`);
+                    log(`❌ WebSocket error: ${err.message}`, 'error');
+                    debugWsStatus.textContent = `Error: ${err.message}`;
                 };
             } catch (err) {
                 log(`Error creating WebSocket: ${err.message}`, 'error');
-                showWsAlert(`Error: ${err.message}`);
+                debugWsStatus.textContent = `Error: ${err.message}`;
             }
         }
         
-        // Disconnect
         function disconnect() {
-            reconnectAttempts = maxReconnectAttempts; // Prevent auto-reconnect
+            reconnectAttempts = maxReconnectAttempts;
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.close();
             }
@@ -744,7 +840,6 @@
             updateStatus(false, 'Disconnected');
         }
         
-        // Subscribe to stations
         function subscribe() {
             if (!isConnected || stations.length === 0) return;
             
@@ -757,7 +852,6 @@
             }
         }
         
-        // Unsubscribe from stations
         function unsubscribe() {
             if (!isConnected) return;
             
@@ -767,26 +861,27 @@
             }
         }
         
-        // Add station to selection
+        // ============================================
+        // Station Management
+        // ============================================
+        
         function addStation() {
             const station = stationInput.value.trim();
             if (station && !stations.includes(station)) {
                 stations.push(station);
                 updateStationList();
                 stationInput.value = '';
-                log(`Added station: ${station}`, 'success');
+                log(`➕ Added station: ${station}`, 'success');
             }
         }
         
-        // Remove station from selection
         function removeStation(index) {
             const station = stations[index];
             stations.splice(index, 1);
             updateStationList();
-            log(`Removed station: ${station}`, 'info');
+            log(`➖ Removed station: ${station}`, 'info');
         }
         
-        // Update station list display
         function updateStationList() {
             stationList.innerHTML = '';
             stations.forEach((station, index) => {
@@ -803,12 +898,14 @@
             subscribeBtn.disabled = !isConnected || stations.length === 0;
         }
         
-        // Clear console
         function clearConsole() {
             consoleEl.innerHTML = '<div class="console-line info">Console cleared</div>';
         }
         
-        // Event listeners
+        // ============================================
+        // Event Listeners
+        // ============================================
+        
         connectBtn.addEventListener('click', connect);
         disconnectBtn.addEventListener('click', disconnect);
         subscribeBtn.addEventListener('click', subscribe);
@@ -822,15 +919,19 @@
             }
         });
         
+        // ============================================
         // Initialize
-        initWaveformPlot();
-        log('slinktool-website loaded. Click Connect to start.', 'info');
+        // ============================================
         
-        // Auto-connect on page load (optional)
-        // connect();
+        initCanvas();
+        log('🚀 slinktool-website loaded. Click Connect to start.', 'info');
         
-        // Make functions available globally for onclick handlers
+        // Make functions available globally
         window.removeStation = removeStation;
+        window.toggleDebug = toggleDebug;
+        
+        // Animation loop for waveforms
+        setInterval(drawWaveforms, 100);
     </script>
 </body>
 </html>
