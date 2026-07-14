@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server/index.js",
+      "use": "@vercel/node",
+      "config": {
+        "memory": 3000,
+        "maxDuration": 30
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "server/index.js"
+    }
+  ],
+  "env": {
+    "SEEDLINK_HOST": "rtserve.iris.washington.edu",
+    "SEEDLINK_PORT": "18000"
+  }
+}
