@@ -76,16 +76,6 @@
             font-size: 0.9rem;
         }
         
-        .mode-badge {
-            background: #00d4ff;
-            color: #1a1a2e;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: bold;
-            margin-left: 10px;
-        }
-        
         .controls {
             display: flex;
             gap: 15px;
@@ -315,6 +305,21 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        
+        .alert {
+            padding: 15px;
+            background: #ff444420;
+            border: 1px solid #ff4444;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            color: #ff8888;
+        }
+        
+        .alert.success {
+            background: #44ff4420;
+            border-color: #44ff44;
+            color: #88ff88;
+        }
     </style>
 </head>
 <body>
@@ -329,7 +334,14 @@
             <div class="status-indicator" id="statusIndicator"></div>
             <span class="status-text" id="statusText">Disconnected</span>
             <span class="status-text" id="serverInfo"></span>
-            <span class="mode-badge" id="modeBadge">WebSocket</span>
+        </div>
+        
+        <!-- Alert for WebSocket connection issues -->
+        <div class="alert" id="wsAlert" style="display: none;">
+            <strong>⚠️ WebSocket Connection Issue:</strong> 
+            <span id="wsAlertText">Trying to connect...</span>
+            <br>
+            <small>Make sure your server is running and WebSocket is supported on your hosting platform.</small>
         </div>
         
         <!-- Controls -->
@@ -385,10 +397,6 @@
                 <div class="stat-label">Latency</div>
                 <div class="stat-value" id="latency">0 ms</div>
             </div>
-            <div class="stat-item">
-                <div class="stat-label">Mode</div>
-                <div class="stat-value" id="connectionMode">WebSocket</div>
-            </div>
         </div>
         
         <!-- Console -->
@@ -409,10 +417,6 @@
                     For more information about IRIS SeedLink, visit:
                     <a href="http://ds.iris.edu/ds/nodes/dmc/services/seedlink/" target="_blank">IRIS SeedLink Documentation</a>
                 </p>
-                <p id="vercelNote" style="display: none; color: #ffcc00;">
-                    <strong>Note:</strong> Running on Vercel with SSE (Server-Sent Events) for real-time updates.
-                    WebSocket features are limited on Vercel's free tier.
-                </p>
             </div>
             
             <div class="console" id="console">
@@ -424,14 +428,14 @@
     <script>
         // Global state
         let ws = null;
-        let sse = null;
         let isConnected = false;
         let stations = [];
         let packetsReceived = 0;
         let lastPacketTime = 0;
         let dataRate = 0;
         let channels = new Set();
-        let connectionMode = 'websocket';
+        let reconnectAttempts = 0;
+        let maxReconnectAttempts = 5;
         
         // Waveform plot
         let waveformPlot = null;
@@ -442,9 +446,8 @@
         const statusText = document.getElementById('statusText');
         const serverInfo = document.getElementById('serverInfo');
         const currentServer = document.getElementById('currentServer');
-        const modeBadge = document.getElementById('modeBadge');
-        const connectionModeEl = document.getElementById('connectionMode');
-        const vercelNote = document.getElementById('vercelNote');
+        const wsAlert = document.getElementById('wsAlert');
+        const wsAlertText = document.getElementById('wsAlertText');
         const connectBtn = document.getElementById('connectBtn');
         const disconnectBtn = document.getElementById('disconnectBtn');
         const subscribeBtn = document.getElementById('subscribeBtn');
@@ -460,22 +463,18 @@
         const latencyEl = document.getElementById('latency');
         const waveformPlotEl = document.getElementById('waveformPlot');
         
-        // Detect if running on Vercel
-        const isVercel = window.location.hostname.includes('vercel.app');
-        
-        // Update mode display
-        function updateMode() {
-            if (isVercel) {
-                connectionMode = 'sse';
-                modeBadge.textContent = 'SSE';
-                connectionModeEl.textContent = 'SSE';
-                vercelNote.style.display = 'block';
-            } else {
-                connectionMode = 'websocket';
-                modeBadge.textContent = 'WebSocket';
-                connectionModeEl.textContent = 'WebSocket';
-                vercelNote.style.display = 'none';
+        // Detect WebSocket URL based on environment
+        function getWebSocketUrl() {
+            // On Render, use wss:// with the same host
+            if (window.location.hostname.includes('onrender.com')) {
+                return `wss://${window.location.hostname}/ws`;
             }
+            // On Vercel, use wss:// with the same host
+            if (window.location.hostname.includes('vercel.app')) {
+                return `wss://${window.location.hostname}/ws`;
+            }
+            // Local development
+            return `ws://${window.location.hostname}:${window.location.port || 3000}/ws`;
         }
         
         // Add log message to console
@@ -503,6 +502,16 @@
             disconnectBtn.disabled = !connected;
             subscribeBtn.disabled = !connected || stations.length === 0;
             unsubscribeBtn.disabled = !connected;
+            
+            if (connected) {
+                wsAlert.style.display = 'none';
+            }
+        }
+        
+        // Show WebSocket alert
+        function showWsAlert(message) {
+            wsAlertText.textContent = message;
+            wsAlert.style.display = 'block';
         }
         
         // Initialize waveform plot
@@ -551,7 +560,7 @@
             
             // Parse Mini-SEED record (simplified)
             try {
-                if (data.length >= 512) {
+                if (data && data.length >= 512) {
                     const recordType = data.toString('ascii', 6, 7);
                     const station = data.toString('ascii', 8, 15).trim();
                     const location = data.toString('ascii', 16, 23).trim();
@@ -562,7 +571,7 @@
                     channels.add(fullChannel);
                     stationCountEl.textContent = channels.size;
                     
-                    log(`Packet: ${fullChannel} (${data.byteLength} bytes)`, 'success');
+                    log(`Packet: ${fullChannel} (${data.length} bytes)`, 'success');
                     
                     // Add to seedlink data for plotting
                     seedlinkData.push({
@@ -631,155 +640,105 @@
             waveformPlot.draw();
         }
         
-        // Connect using WebSocket
-        function connectWebSocket() {
-            const host = document.getElementById('serverHost').value;
-            const port = document.getElementById('serverPort').value;
-            
-            currentServer.textContent = `${host}:${port}`;
-            
-            // Close existing connections
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.close();
-            }
-            if (sse) {
-                sse.close();
-            }
-            
-            log(`Connecting via WebSocket...`, 'info');
-            
-            // Connect to local WebSocket server
-            const wsUrl = `ws://${window.location.hostname}:${window.location.port === '80' ? '' : window.location.port}`;
-            ws = new WebSocket(wsUrl);
-            
-            ws.onopen = () => {
-                log('Connected via WebSocket', 'success');
-                updateStatus(true, `Server: ${host}:${port}`);
-            };
-            
-            ws.onmessage = (event) => {
-                if (typeof event.data === 'string') {
-                    const msg = JSON.parse(event.data);
-                    
-                    switch (msg.type) {
-                        case 'welcome':
-                            log(`Welcome: ${msg.message}`, 'success');
-                            log(`SeedLink server: ${msg.seedlinkServer}`, 'info');
-                            break;
-                        case 'subscribed':
-                            log(`Subscribed to: ${msg.stations}`, 'success');
-                            break;
-                        case 'seedlink_connected':
-                            log(`SeedLink connected: ${msg.message}`, 'success');
-                            break;
-                        case 'seedlink_disconnected':
-                            log(`SeedLink disconnected: ${msg.message}`, 'warning');
-                            updateStatus(false, 'SeedLink disconnected');
-                            break;
-                        case 'error':
-                            log(`Error: ${msg.message}`, 'error');
-                            break;
-                        case 'pong':
-                            const latency = Date.now() - msg.timestamp;
-                            latencyEl.textContent = `${latency} ms`;
-                            break;
-                        default:
-                            log(`Unknown message: ${JSON.stringify(msg)}`, 'warning');
-                    }
-                } else {
-                    // Binary data (Mini-SEED record)
-                    processMiniSeed(event.data);
-                }
-            };
-            
-            ws.onclose = () => {
-                log('Disconnected from WebSocket server', 'warning');
-                updateStatus(false, 'Disconnected');
-            };
-            
-            ws.onerror = (err) => {
-                log(`WebSocket error: ${err.message}`, 'error');
-                updateStatus(false, 'Connection error');
-            };
-        }
-        
-        // Connect using SSE (for Vercel)
-        function connectSSE() {
-            const host = document.getElementById('serverHost').value;
-            const port = document.getElementById('serverPort').value;
-            
-            currentServer.textContent = `${host}:${port}`;
-            
-            // Close existing connections
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.close();
-            }
-            if (sse) {
-                sse.close();
-            }
-            
-            log(`Connecting via SSE...`, 'info');
-            
-            // Connect to SSE endpoint
-            sse = new EventSource('/api/sse');
-            
-            sse.onopen = () => {
-                log('Connected via SSE', 'success');
-                updateStatus(true, `Server: ${host}:${port}`);
-            };
-            
-            sse.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                
-                switch (msg.type) {
-                    case 'welcome':
-                        log(`Welcome: ${msg.message}`, 'success');
-                        log(`SeedLink server: ${msg.seedlinkServer}`, 'info');
-                        break;
-                    case 'data':
-                        // Data is base64 encoded
-                        const data = Buffer.from(msg.record, 'base64');
-                        processMiniSeed(data);
-                        break;
-                    case 'seedlink_connected':
-                        log(`SeedLink connected: ${msg.message}`, 'success');
-                        break;
-                    case 'seedlink_disconnected':
-                        log(`SeedLink disconnected: ${msg.message}`, 'warning');
-                        updateStatus(false, 'SeedLink disconnected');
-                        break;
-                    case 'error':
-                        log(`Error: ${msg.message}`, 'error');
-                        break;
-                    default:
-                        log(`Unknown message: ${JSON.stringify(msg)}`, 'warning');
-                }
-            };
-            
-            sse.onerror = (err) => {
-                log(`SSE error: ${err.message}`, 'error');
-                updateStatus(false, 'Connection error');
-            };
-        }
-        
-        // Connect based on mode
+        // Connect to WebSocket server
         function connect() {
-            updateMode();
+            const host = document.getElementById('serverHost').value;
+            const port = document.getElementById('serverPort').value;
+            currentServer.textContent = `${host}:${port}`;
             
-            if (connectionMode === 'websocket') {
-                connectWebSocket();
-            } else {
-                connectSSE();
+            // Close existing connection
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            }
+            
+            log(`Connecting to WebSocket server...`, 'info');
+            showWsAlert('Connecting to server...');
+            
+            // Get the appropriate WebSocket URL
+            const wsUrl = getWebSocketUrl();
+            log(`WebSocket URL: ${wsUrl}`, 'info');
+            
+            try {
+                ws = new WebSocket(wsUrl);
+                
+                ws.onopen = () => {
+                    log('Connected to WebSocket server', 'success');
+                    updateStatus(true, `Server: ${host}:${port}`);
+                    reconnectAttempts = 0;
+                    
+                    // Auto-subscribe if stations are already selected
+                    if (stations.length > 0) {
+                        subscribe();
+                    }
+                };
+                
+                ws.onmessage = (event) => {
+                    if (typeof event.data === 'string') {
+                        const msg = JSON.parse(event.data);
+                        
+                        switch (msg.type) {
+                            case 'welcome':
+                                log(`Welcome: ${msg.message}`, 'success');
+                                log(`SeedLink server: ${msg.seedlinkServer}`, 'info');
+                                break;
+                            case 'subscribed':
+                                log(`Subscribed to: ${msg.stations.join(', ')}`, 'success');
+                                break;
+                            case 'unsubscribed':
+                                log('Unsubscribed from stations', 'info');
+                                break;
+                            case 'seedlink_connected':
+                                log(`SeedLink connected: ${msg.message}`, 'success');
+                                break;
+                            case 'seedlink_disconnected':
+                                log(`SeedLink disconnected: ${msg.message}`, 'warning');
+                                updateStatus(false, 'SeedLink disconnected');
+                                break;
+                            case 'error':
+                                log(`Error: ${msg.message}`, 'error');
+                                break;
+                            case 'pong':
+                                const latency = Date.now() - msg.timestamp;
+                                latencyEl.textContent = `${latency} ms`;
+                                break;
+                            default:
+                                log(`Unknown message: ${JSON.stringify(msg)}`, 'warning');
+                        }
+                    } else {
+                        // Binary data (Mini-SEED record)
+                        processMiniSeed(event.data);
+                    }
+                };
+                
+                ws.onclose = () => {
+                    log('Disconnected from WebSocket server', 'warning');
+                    updateStatus(false, 'Disconnected');
+                    
+                    // Auto-reconnect
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        reconnectAttempts++;
+                        showWsAlert(`Disconnected. Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`);
+                        setTimeout(connect, 3000);
+                    } else {
+                        showWsAlert('Failed to connect. Check if the server is running.');
+                    }
+                };
+                
+                ws.onerror = (err) => {
+                    log(`WebSocket error: ${err.message}`, 'error');
+                    showWsAlert(`Connection error: ${err.message}`);
+                };
+            } catch (err) {
+                log(`Error creating WebSocket: ${err.message}`, 'error');
+                showWsAlert(`Error: ${err.message}`);
             }
         }
         
         // Disconnect
         function disconnect() {
+            reconnectAttempts = maxReconnectAttempts; // Prevent auto-reconnect
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.close();
-            }
-            if (sse) {
-                sse.close();
             }
             log('Disconnected', 'info');
             updateStatus(false, 'Disconnected');
@@ -789,27 +748,12 @@
         function subscribe() {
             if (!isConnected || stations.length === 0) return;
             
-            if (connectionMode === 'websocket' && ws && ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                     type: 'subscribe',
                     stations: stations
                 }));
                 log(`Subscribing to ${stations.length} stations...`, 'info');
-            } else if (connectionMode === 'sse') {
-                fetch('/api/subscribe', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ stations: stations })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    log(`Subscribed: ${data.message}`, 'success');
-                })
-                .catch(err => {
-                    log(`Subscribe error: ${err.message}`, 'error');
-                });
             }
         }
         
@@ -817,7 +761,7 @@
         function unsubscribe() {
             if (!isConnected) return;
             
-            if (connectionMode === 'websocket' && ws && ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'unsubscribe' }));
                 log('Unsubscribing...', 'info');
             }
@@ -879,9 +823,11 @@
         });
         
         // Initialize
-        updateMode();
         initWaveformPlot();
         log('slinktool-website loaded. Click Connect to start.', 'info');
+        
+        // Auto-connect on page load (optional)
+        // connect();
         
         // Make functions available globally for onclick handlers
         window.removeStation = removeStation;

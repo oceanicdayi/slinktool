@@ -1,251 +1,230 @@
 /**
  * slinktool-website - Server for IRIS FDSNWS SeedLink waveform viewer
  * 
- * This server can run in two modes:
- * 1. Standard mode: WebSocket + HTTP server (for local/Render/Railway deployment)
- * 2. Vercel mode: HTTP only with Server-Sent Events (SSE) for real-time updates
+ * This server works on Render, Railway, Vercel, and other hosting platforms.
+ * It provides both HTTP and WebSocket services for real-time waveform streaming.
  */
 
 const express = require('express');
 const WebSocket = require('ws');
 const path = require('path');
+const net = require('net');
 const { SeedLinkClient } = require('./seedlink');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT) || 3000;
 const SEEDLINK_HOST = process.env.SEEDLINK_HOST || 'rtserve.iris.washington.edu';
 const SEEDLINK_PORT = parseInt(process.env.SEEDLINK_PORT) || 18000;
-
-// Detect if running on Vercel (serverless environment)
-const IS_VERCEL = process.env.VERCEL || process.env.NOW_REGION;
 
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Store active SSE connections for Vercel mode
-const sseClients = new Set();
+// Create HTTP server
+const server = app.listen(PORT, () => {
+  console.log(`slinktool-website server running on port ${PORT}`);
+  console.log(`SeedLink server: ${SEEDLINK_HOST}:${SEEDLINK_PORT}`);
+  console.log(`Environment: ${process.env.RENDER ? 'Render' : process.env.VERCEL ? 'Vercel' : 'Local'}`);
+});
 
-// Store SeedLink connection (shared for all clients in Vercel mode)
-let seedlinkClient = null;
-let currentStations = [];
+// Create WebSocket server
+const wss = new WebSocket.Server({ server, path: '/ws' });
+
+// Store all connected clients
+const clients = new Set();
+const seedlinkConnections = new Map(); // clientId -> SeedLinkClient
+
+// Default stations
+const DEFAULT_STATIONS = ['IU_KONO', 'GE_WLF', 'MN_AQU'];
 
 /**
- * Start WebSocket server (for non-Vercel environments)
+ * Create a SeedLink connection for a client
  */
-function startWebSocketServer(server) {
-  const wss = new WebSocket.Server({ server });
-  const clients = new Set();
-  const seedlinkConnections = new Map();
+function createSeedLinkConnection(clientId, stations = DEFAULT_STATIONS) {
+  const slClient = new SeedLinkClient(SEEDLINK_HOST, SEEDLINK_PORT);
   
-  wss.on('connection', (ws, req) => {
-    const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    ws.clientId = clientId;
-    clients.add(ws);
-    
-    ws.send(JSON.stringify({
-      type: 'welcome',
-      message: 'Connected to slinktool-website',
-      seedlinkServer: `${SEEDLINK_HOST}:${SEEDLINK_PORT}`,
-      clientId: clientId,
-      mode: 'websocket'
+  slClient.on('onConnect', () => {
+    console.log(`[${clientId}] SeedLink connected`);
+    sendToClient(clientId, JSON.stringify({
+      type: 'seedlink_connected',
+      message: 'Connected to SeedLink server'
     }));
-    
-    ws.on('message', (message) => {
-      try {
-        if (typeof message === 'string') {
-          const msg = JSON.parse(message);
-          
-          switch (msg.type) {
-            case 'subscribe':
-              const stations = msg.stations || ['IU_KONO', 'GE_WLF', 'MN_AQU'];
-              
-              if (seedlinkConnections.has(clientId)) {
-                seedlinkConnections.get(clientId).disconnect();
-                seedlinkConnections.delete(clientId);
-              }
-              
-              const slClient = new SeedLinkClient(SEEDLINK_HOST, SEEDLINK_PORT);
-              slClient.setStationSelectors(stations.join(','));
-              
-              slClient.on('onData', (record) => {
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.send(record);
-                }
-              });
-              
-              slClient.connect();
-              seedlinkConnections.set(clientId, slClient);
-              
-              ws.send(JSON.stringify({
-                type: 'subscribed',
-                stations: stations,
-                message: `Subscribed to stations: ${stations.join(', ')}`
-              }));
-              break;
-              
-            case 'unsubscribe':
-              if (seedlinkConnections.has(clientId)) {
-                seedlinkConnections.get(clientId).disconnect();
-                seedlinkConnections.delete(clientId);
-              }
-              break;
-          }
-        }
-      } catch (err) {
-        console.error('Error processing message:', err);
-      }
-    });
-    
-    ws.on('close', () => {
-      clients.delete(ws);
-      if (seedlinkConnections.has(clientId)) {
-        seedlinkConnections.get(clientId).disconnect();
-        seedlinkConnections.delete(clientId);
-      }
-    });
   });
   
-  return wss;
+  slClient.on('onDisconnect', () => {
+    console.log(`[${clientId}] SeedLink disconnected`);
+    sendToClient(clientId, JSON.stringify({
+      type: 'seedlink_disconnected',
+      message: 'Disconnected from SeedLink server'
+    }));
+  });
+  
+  slClient.on('onError', (err) => {
+    console.error(`[${clientId}] SeedLink error:`, err.message);
+    sendToClient(clientId, JSON.stringify({
+      type: 'error',
+      message: `SeedLink error: ${err.message}`
+    }));
+  });
+  
+  slClient.on('onData', (record) => {
+    // Forward Mini-SEED record to client as binary
+    sendToClient(clientId, record, true);
+  });
+  
+  // Set station selectors
+  slClient.setStationSelectors(stations.join(','));
+  slClient.connect();
+  
+  return slClient;
 }
 
 /**
- * SSE endpoint for Vercel (HTTP long-polling alternative)
+ * Send message to a specific client
  */
-app.get('/api/sse', (req, res) => {
-  console.log('New SSE connection');
-  
-  // Set SSE headers
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control'
-  });
-  
-  // Send welcome message
-  res.write(`data: ${JSON.stringify({
-    type: 'welcome',
-    message: 'Connected via SSE',
-    seedlinkServer: `${SEEDLINK_HOST}:${SEEDLINK_PORT}`,
-    mode: 'sse'
-  })}\n\n`);
-  
-  // Store client
-  sseClients.add(res);
-  
-  // Handle client disconnect
-  req.on('close', () => {
-    console.log('SSE client disconnected');
-    sseClients.delete(res);
-  });
-  
-  req.on('error', () => {
-    sseClients.delete(res);
-  });
-});
-
-/**
- * Subscribe endpoint for SSE mode
- */
-app.post('/api/subscribe', express.json(), (req, res) => {
-  const stations = req.body.stations || ['IU_KONO', 'GE_WLF', 'MN_AQU'];
-  currentStations = stations;
-  
-  // Close existing connection
-  if (seedlinkClient) {
-    seedlinkClient.disconnect();
-  }
-  
-  // Create new connection
-  seedlinkClient = new SeedLinkClient(SEEDLINK_HOST, SEEDLINK_PORT);
-  seedlinkClient.setStationSelectors(stations.join(','));
-  
-  seedlinkClient.on('onData', (record) => {
-    // Broadcast to all SSE clients
-    const message = `data: ${JSON.stringify({ type: 'data', record: record.toString('base64') })}\n\n`;
-    sseClients.forEach(client => {
+function sendToClient(clientId, message, isBinary = false) {
+  clients.forEach((client) => {
+    if (client.clientId === clientId && client.readyState === WebSocket.OPEN) {
       try {
-        client.write(message);
+        if (isBinary) {
+          client.send(message);
+        } else {
+          client.send(message);
+        }
       } catch (err) {
-        // Client disconnected
+        console.error(`[${clientId}] Error sending message:`, err.message);
       }
-    });
-  });
-  
-  seedlinkClient.on('onConnect', () => {
-    broadcastSSE({ type: 'seedlink_connected', message: 'Connected to SeedLink server' });
-  });
-  
-  seedlinkClient.on('onDisconnect', () => {
-    broadcastSSE({ type: 'seedlink_disconnected', message: 'Disconnected from SeedLink server' });
-  });
-  
-  seedlinkClient.on('onError', (err) => {
-    broadcastSSE({ type: 'error', message: err.message });
-  });
-  
-  seedlinkClient.connect();
-  
-  res.json({ success: true, stations, message: 'Subscribed successfully' });
-});
-
-/**
- * Broadcast to all SSE clients
- */
-function broadcastSSE(message) {
-  const data = `data: ${JSON.stringify(message)}\n\n`;
-  sseClients.forEach(client => {
-    try {
-      client.write(data);
-    } catch (err) {
-      // Client disconnected
     }
   });
 }
 
 /**
- * API endpoint for station list
+ * WebSocket connection handler
  */
-app.get('/api/stations', (req, res) => {
-  res.json({
-    defaultStations: ['IU_KONO', 'GE_WLF', 'MN_AQU', 'US_TUC', 'TA_M16A'],
-    seedlinkServer: `${SEEDLINK_HOST}:${SEEDLINK_PORT}`
+wss.on('connection', (ws, req) => {
+  const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const clientIp = req.socket.remoteAddress;
+  
+  console.log(`[WebSocket] New client connected: ${clientId} from ${clientIp}`);
+  
+  // Store client with metadata
+  ws.clientId = clientId;
+  ws.stations = [];
+  clients.add(ws);
+  
+  // Send welcome message
+  ws.send(JSON.stringify({
+    type: 'welcome',
+    message: 'Connected to slinktool-website',
+    seedlinkServer: `${SEEDLINK_HOST}:${SEEDLINK_PORT}`,
+    clientId: clientId,
+    defaultStations: DEFAULT_STATIONS,
+    mode: 'websocket'
+  }));
+  
+  // Handle messages from client
+  ws.on('message', (message) => {
+    try {
+      if (typeof message === 'string') {
+        const msg = JSON.parse(message);
+        
+        console.log(`[${clientId}] Received:`, msg);
+        
+        switch (msg.type) {
+          case 'subscribe':
+            const stations = msg.stations || DEFAULT_STATIONS;
+            ws.stations = stations;
+            
+            // Close existing connection if exists
+            if (seedlinkConnections.has(clientId)) {
+              seedlinkConnections.get(clientId).disconnect();
+              seedlinkConnections.delete(clientId);
+            }
+            
+            // Create new connection
+            const slClient = createSeedLinkConnection(clientId, stations);
+            seedlinkConnections.set(clientId, slClient);
+            
+            ws.send(JSON.stringify({
+              type: 'subscribed',
+              stations: stations,
+              message: `Subscribed to stations: ${stations.join(', ')}`
+            }));
+            break;
+            
+          case 'unsubscribe':
+            if (seedlinkConnections.has(clientId)) {
+              seedlinkConnections.get(clientId).disconnect();
+              seedlinkConnections.delete(clientId);
+              
+              ws.send(JSON.stringify({
+                type: 'unsubscribed',
+                message: 'Unsubscribed from stations'
+              }));
+            }
+            break;
+            
+          case 'ping':
+            ws.send(JSON.stringify({
+              type: 'pong',
+              timestamp: msg.timestamp || Date.now()
+            }));
+            break;
+        }
+      }
+    } catch (err) {
+      console.error(`[${clientId}] Error processing message:`, err);
+    }
+  });
+  
+  // Handle client disconnect
+  ws.on('close', () => {
+    console.log(`[WebSocket] Client disconnected: ${clientId}`);
+    clients.delete(ws);
+    
+    // Close dedicated SeedLink connection if exists
+    if (seedlinkConnections.has(clientId)) {
+      seedlinkConnections.get(clientId).disconnect();
+      seedlinkConnections.delete(clientId);
+    }
+  });
+  
+  ws.on('error', (err) => {
+    console.error(`[WebSocket] Client error: ${clientId}`, err.message);
+    clients.delete(ws);
   });
 });
 
-// Start server
-if (IS_VERCEL) {
-  console.log('Running in Vercel mode (SSE for real-time updates)');
-  console.log('Note: WebSocket features are limited on Vercel free tier');
-  
-  // Vercel expects the server to listen on the port they provide
-  const server = app.listen(PORT, () => {
-    console.log(`slinktool-website server running on port ${PORT}`);
-    console.log(`SeedLink server: ${SEEDLINK_HOST}:${SEEDLINK_PORT}`);
-    console.log(`Mode: ${IS_VERCEL ? 'Vercel (SSE)' : 'Standard (WebSocket)'}`);
+// API endpoint for testing
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    seedlinkServer: `${SEEDLINK_HOST}:${SEEDLINK_PORT}`,
+    clients: clients.size,
+    connections: seedlinkConnections.size
   });
-  
-  // Handle Vercel serverless timeout
-  server.keepAliveTimeout = 60000;
-  server.headersTimeout = 60000;
-} else {
-  console.log('Running in standard mode (WebSocket + HTTP)');
-  const server = app.listen(PORT, () => {
-    console.log(`slinktool-website server running on port ${PORT}`);
-    console.log(`SeedLink server: ${SEEDLINK_HOST}:${SEEDLINK_PORT}`);
-    console.log(`Mode: ${IS_VERCEL ? 'Vercel (SSE)' : 'Standard (WebSocket)'}`);
-  });
-  
-  // Start WebSocket server
-  startWebSocketServer(server);
-}
+});
 
 // Handle process termination
 process.on('SIGINT', () => {
   console.log('Shutting down...');
-  if (seedlinkClient) {
-    seedlinkClient.disconnect();
-  }
-  process.exit(0);
+  
+  // Close all SeedLink connections
+  seedlinkConnections.forEach((slClient) => {
+    slClient.disconnect();
+  });
+  
+  // Close WebSocket server
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.close(1001, 'Server shutting down');
+    }
+  });
+  
+  server.close(() => {
+    console.log('Server stopped');
+    process.exit(0);
+  });
 });
+
+console.log('slinktool-website starting...');
