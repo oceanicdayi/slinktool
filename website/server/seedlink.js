@@ -46,6 +46,9 @@ class SeedLinkClient {
     };
     
     this.buffer = Buffer.alloc(0);
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectTimeout = null;
   }
   
   /**
@@ -64,10 +67,14 @@ class SeedLinkClient {
     this.socket.on('connect', () => {
       this.connected = true;
       this.buffer = Buffer.alloc(0);
+      this.reconnectAttempts = 0;
+      
+      console.log(`[SeedLink] Connected to ${this.host}:${this.port}`);
       
       // Send HELLO message
       const helloMsg = 'HELLO slinktool-website\r\n';
       this.socket.write(helloMsg);
+      console.log(`[SeedLink] Sent HELLO`);
       
       if (this.callbacks.onConnect) {
         this.callbacks.onConnect();
@@ -83,21 +90,60 @@ class SeedLinkClient {
       this.connected = false;
       this.handshakeComplete = false;
       
+      console.error(`[SeedLink] Connection error: ${err.message}`);
+      
       if (this.callbacks.onError) {
         this.callbacks.onError(err);
       }
+      
+      // Attempt to reconnect
+      this.scheduleReconnect();
     });
     
     this.socket.on('close', () => {
       this.connected = false;
       this.handshakeComplete = false;
       
+      console.log(`[SeedLink] Connection closed`);
+      
       if (this.callbacks.onDisconnect) {
         this.callbacks.onDisconnect();
       }
+      
+      // Attempt to reconnect
+      this.scheduleReconnect();
     });
     
+    // Set timeout for connection
+    this.socket.setTimeout(30000, () => {
+      console.error(`[SeedLink] Connection timeout`);
+      this.socket.destroy();
+    });
+    
+    console.log(`[SeedLink] Connecting to ${this.host}:${this.port}...`);
     this.socket.connect(this.port, this.host);
+  }
+  
+  /**
+   * Schedule reconnection
+   */
+  scheduleReconnect() {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+      console.log(`[SeedLink] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+      
+      if (this.reconnectTimeout) {
+        clearTimeout(this.reconnectTimeout);
+      }
+      
+      this.reconnectTimeout = setTimeout(() => {
+        console.log(`[SeedLink] Reconnecting...`);
+        this.connect();
+      }, delay);
+    } else {
+      console.error(`[SeedLink] Max reconnection attempts reached`);
+    }
   }
   
   /**
@@ -108,6 +154,12 @@ class SeedLinkClient {
       this.socket.destroy();
       this.socket = null;
     }
+    
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    
     this.connected = false;
     this.handshakeComplete = false;
   }
@@ -148,7 +200,7 @@ class SeedLinkClient {
         this.handleErrorPacket(payload);
         break;
       default:
-        console.log(`Unknown packet type: ${header.packetType}`);
+        console.log(`[SeedLink] Unknown packet type: ${header.packetType}`);
     }
   }
   
@@ -166,16 +218,16 @@ class SeedLinkClient {
    */
   handleHelloPacket(payload) {
     const response = payload.toString('ascii').trim();
-    console.log(`SeedLink HELLO response: ${response}`);
+    console.log(`[SeedLink] HELLO response: ${response}`);
     
-    // After HELLO, we can send INFO or STATION commands
-    // For now, request station list
+    // After HELLO, send station selection if provided
     if (this.stationSelectors) {
-      // Multi-station mode
       const stationMsg = `STATION ${this.stationSelectors}\r\n`;
+      console.log(`[SeedLink] Sending STATION: ${this.stationSelectors}`);
       this.socket.write(stationMsg);
     } else {
-      // Request info
+      // Request station list
+      console.log(`[SeedLink] Requesting INFO ID`);
       this.socket.write('INFO ID\r\n');
     }
   }
@@ -185,7 +237,7 @@ class SeedLinkClient {
    */
   handleInfoPacket(payload) {
     const info = payload.toString('ascii').trim();
-    console.log(`SeedLink INFO: ${info}`);
+    console.log(`[SeedLink] INFO: ${info}`);
     
     if (this.callbacks.onInfo) {
       this.callbacks.onInfo(info);
@@ -196,7 +248,9 @@ class SeedLinkClient {
    * Handle DATA packet (contains Mini-SEED record)
    */
   handleDataPacket(payload, seqNum) {
-    // Forward the raw Mini-SEED record to the callback
+    console.log(`[SeedLink] Received DATA packet (seq: ${seqNum}, size: ${payload.length})`);
+    
+    // Forward the raw Mini-SEED record to callback
     if (this.callbacks.onData) {
       this.callbacks.onData(payload, seqNum);
     }
@@ -207,7 +261,7 @@ class SeedLinkClient {
    */
   handleStationPacket(payload) {
     const stationInfo = payload.toString('ascii').trim();
-    console.log(`SeedLink STATION: ${stationInfo}`);
+    console.log(`[SeedLink] STATION: ${stationInfo}`);
     this.handshakeComplete = true;
   }
   
@@ -216,7 +270,7 @@ class SeedLinkClient {
    */
   handleErrorPacket(payload) {
     const errorMsg = payload.toString('ascii').trim();
-    console.error(`SeedLink ERROR: ${errorMsg}`);
+    console.error(`[SeedLink] ERROR: ${errorMsg}`);
   }
   
   /**
@@ -228,6 +282,7 @@ class SeedLinkClient {
     // If already connected, send station selection
     if (this.connected && !this.handshakeComplete) {
       const stationMsg = `STATION ${selectors}\r\n`;
+      console.log(`[SeedLink] Setting stations: ${selectors}`);
       this.socket.write(stationMsg);
     }
   }
@@ -237,6 +292,7 @@ class SeedLinkClient {
    */
   requestInfo(level = 'ID') {
     if (this.connected) {
+      console.log(`[SeedLink] Requesting INFO ${level}`);
       this.socket.write(`INFO ${level}\r\n`);
     }
   }
